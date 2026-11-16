@@ -1,0 +1,109 @@
+---
+title: Homework 4 - Texas Blackouts
+author: Erin Yang
+format: pdf
+execute: 
+  warning: false
+---
+
+# Identifying Blackout Locations During the 2021 Texas Power Crisis
+
+## Load Data
+```{r}
+library(terra) # raster handling
+library(tidyverse)
+library(tmap) # map making
+library(kableExtra) # table formatting
+library(sf)
+library(stars)
+library(here)
+```
+
+```{r}
+lights_7_1 <- rast('data/VNP46A1/VNP46A1.A2021038.h08v05.001.2021039064328.tif')
+lights_7_2 <- rast('data/VNP46A1/VNP46A1.A2021038.h08v06.001.2021039064329.tif')
+lights_16_1 <- rast('data/VNP46A1/VNP46A1.A2021047.h08v05.001.2021048091106.tif')
+lights_16_2 <- rast('data/VNP46A1/VNP46A1.A2021047.h08v06.001.2021048091105.tif')
+
+roads <- st_read(here('data/gis_osm_roads_free_1.gpkg'), query = "SELECT * FROM gis_osm_roads_free_1 WHERE fclass='motorway'")
+
+houses <- st_read(here('data/gis_osm_buildings_a_free_1.gpkg'), query = "SELECT *
+FROM gis_osm_buildings_a_free_1
+WHERE (type IS NULL AND name IS NULL)
+OR type IN ('residential', 'apartments', 'house', 'static_caravan', 'detached')")
+```
+
+## Data Merging
+
+```{r}
+lights_7 <- merge(lights_7_1, lights_7_2)
+lights_16 <- merge(lights_16_1, lights_16_2)
+```
+
+## Create Blackout Mask
+
+```{r}
+# calculate differences in light
+light_dif <- lights_16 - lights_7
+
+# reclassify to under 200
+rcl <- matrix(c(
+    -Inf, 200, NA,
+    200, Inf, 1
+), ncol = 3, byrow = TRUE)
+
+reclassified <- classify(light_dif, rcl = rcl)
+
+# vectorize raster
+reclassified_vect <- st_as_stars(reclassified) |> st_as_sf()
+```
+
+
+```{r}
+# create a raster with a smaller extent
+# Create the bbox extent of Houston
+clip <- st_bbox(
+  c(xmin = -96.5, ymin = 29, xmax = -94.5, ymax = 30.5),
+  crs = st_crs(reclassified_vect)
+)
+
+# select values that fall within smaller extent
+lights_clip <- st_crop(reclassified_vect, clip)
+
+# verify that output has fewer values than original
+if(ncell(reclassified_vect) == nrow(lights_clip)) {
+  warning("clipping did not remove cells")
+} else {
+  print("clipping removed cells")
+}
+
+lights_clip <- st_transform(lights_clip, crs = 3083)
+```
+
+mapping lights before and after
+
+```{r}
+# ISSUE: NO POINTS IN LIGHTS_7??
+lights_7[lights_7 > 1000] <- NA
+
+tm_shape(lights_7) +
+    tm_raster(col_alpha = 0.7, col.scale = tm_scale(values = "inferno")) 
+    #tm_basemap('OpenStreetMap')
+```
+
+
+## Exclude Highways
+
+```{r}
+# make roads crs the same as lights
+roads <- st_transform(roads, crs = 3083)
+
+# 200m buffer around highways
+buffer <- st_union(st_buffer(roads, dist = 200))
+
+lights_buff <- st_difference(lights_clip, buffer)
+
+tm_shape(lights_buff) +
+    tm_polygons()
+
+```
